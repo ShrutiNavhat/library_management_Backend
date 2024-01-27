@@ -10,7 +10,7 @@ CORS(app)
 app.config["MYSQL_HOST"] = "localhost"
 app.config["MYSQL_USER"] = "root"
 app.config["MYSQL_PASSWORD"] = "navgurukul"
-app.config["MYSQL_DB"] = "library_data"
+app.config["MYSQL_DB"] = "Library_Data"
 
 mysql = MySQL(app)
 
@@ -35,8 +35,12 @@ def get_books():
         all_data = cur.fetchall()
         cur.close()
 
-        data_dicts = [dict(zip(user_schema.fields.keys(), row)) for row in all_data]
-
+        # data_dicts = [dict(zip(user_schema.fields.keys(), row)) for row in all_data]
+        data_dicts = []
+        for row in all_data:
+            row_dict = dict(zip(user_schema.fields.keys(), row))
+            data_dicts.append(row_dict)
+                    
         result = user_schema.dump(data_dicts)
         return jsonify({"data": result})
 
@@ -48,7 +52,14 @@ def get_books():
 def detail_books(id):
     try:
         cur = mysql.connection.cursor()
-        cur.execute("SELECT * FROM books WHERE Book_Id = %s", (id,))
+
+        # Check if a search query is provided
+        search_query = request.args.get("search", "").lower()
+        if search_query:
+            cur.execute("SELECT * FROM books WHERE Book_Id = %s AND title LIKE %s", (id, '%' + search_query + '%'))
+        else:
+            cur.execute("SELECT * FROM books WHERE Book_Id = %s", (id,))
+
         book = cur.fetchone()
         cur.close()
 
@@ -61,8 +72,7 @@ def detail_books(id):
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"})
 
-
-@app.route("/books/update/<id>", methods=["PUT"])
+@app.route("/books/update/<int:id>", methods=["PUT"])
 def update_books(id):
     try:
         cur = mysql.connection.cursor()
@@ -74,6 +84,7 @@ def update_books(id):
 
         data = request.get_json()
 
+        # Extract data from the JSON payload or use existing values if not provided
         Book_Id = data.get("Book_Id", book[0])
         Title = data.get("Title", book[1])
         Author = data.get("Author", book[2])
@@ -81,8 +92,11 @@ def update_books(id):
         Quantity = data.get("Quantity", book[4])
         Publish_date = data.get("Publish_date", book[5])
 
-        cur.execute("UPDATE books SET Book_Id=%s, Title=%s, Author=%s, Isbn_No=%s, Quantity=%s, Publish_date=%s WHERE Book_Id=%s",
-                    (Book_Id, Title, Author, Isbn_No, Quantity, Publish_date, id))
+        cur.execute("""
+            UPDATE books
+            SET Book_Id=%s, Title=%s, Author=%s, Isbn_No=%s, Quantity=%s, Publish_date=%s
+            WHERE Book_Id=%s
+        """, (Book_Id, Title, Author, Isbn_No, Quantity, Publish_date, id))
 
         mysql.connection.commit()
 
@@ -96,27 +110,31 @@ def update_books(id):
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"})
 
-
 @app.route("/books/delete/<id>", methods=["DELETE"])
 def delete_books(id):
     try:
         cur = mysql.connection.cursor()
+
+        # Check if the book exists before deletion
         cur.execute("SELECT * FROM books WHERE Book_Id = %s", (id,))
         deleted_book = cur.fetchone()
 
+        if not deleted_book:
+            return jsonify({"message": "Book not found"})
+
+        # Update transactions referencing the book to null or another value
+        cur.execute("UPDATE transactions SET Book_Id = NULL WHERE Book_Id = %s", (id,))
+
+        # Delete the book
         cur.execute("DELETE FROM books WHERE Book_Id = %s", (id,))
         mysql.connection.commit()
         cur.close()
 
-        if deleted_book:
-            return jsonify({"data": dict(zip(user_schema.fields.keys(), deleted_book)),
-                            "message": "Book deleted successfully"})
-        else:
-            return jsonify({"message": "Book not found"})
+        return jsonify({"data": dict(zip(user_schema.fields.keys(), deleted_book)),
+                        "message": "Book deleted successfully"})
 
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"})
-
 
 @app.route("/books/add", methods=["POST"])
 def add_books():
@@ -192,7 +210,41 @@ def detail_members(id):
         return jsonify({"error": f"An error occurred: {str(e)}"})
 
 
+@app.route("/Members/update/<id>", methods=["PUT"])
+def update_members(id):
+    try:
+        print(f"Updating member with id {id}")
 
+        cur = mysql.connection.cursor()
+        cur.execute("SELECT * FROM Members WHERE Member_Id = %s", (id,))
+        member = cur.fetchone()
+
+        if not member:
+            print(f"Member with id {id} not found")
+            return jsonify({"message": "Member not found"})
+
+        data = request.get_json()
+
+        member_id = data.get("Member_Id", member[0])
+        name = data.get("Name", member[1])
+        phone_no = data.get("Phone_No", member[2])
+
+        cur.execute("UPDATE Members SET Member_Id=%s, Name=%s, Phone_No=%s WHERE Member_Id=%s",
+                    (member_id, name, phone_no, id))
+
+        mysql.connection.commit()
+
+        cur.execute("SELECT * FROM Members WHERE Member_Id = %s", (id,))
+        updated_member = cur.fetchone()
+
+        cur.close()
+
+        print(f"Member updated: {updated_member}")
+        return jsonify({"data": Member_schema.dump(updated_member)})
+
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return jsonify({"error": f"An error occurred: {str(e)}"})
 
 @app.route("/Members/delete/<id>", methods=["DELETE"])
 def delete_members(id):
@@ -248,50 +300,35 @@ def add_members():
 
 class TransactionSchema(Schema):
     Id = fields.Integer()
-    Amount_paid = fields.Integer()
-    Return_date = fields.Date()
-    Issue_date = fields.Date()
     Book_Id=fields.Integer()
     Member_Id=fields.Integer()
+    Amount_paid = fields.Integer()
+    Quantity=fields.Integer()
+    Return_date = fields.Date()
+    Issue_date = fields.Date()
 
 
 transaction_schema = TransactionSchema(many=True)
 @app.route("/transactions/data", methods=["GET"])
-def get_transaction():
+def get_transactions():
     try:
         cur = mysql.connection.cursor()
         cur.execute("SELECT * FROM transactions")
-        all_data = cur.fetchall()
+        all_data1 = cur.fetchall()
         cur.close()
 
-        transaction_dicts = [dict(zip(user_schema.fields.keys(), row)) for row in all_data]
+        # transaction_dicts = [dict(zip(transaction_schema.fields.keys(), row)) for row in all_data1]
+        transaction_dicts = []
+        for row in all_data1:
+            row_dict = dict(zip(transaction_schema.fields.keys(), row))
+            transaction_dicts.append(row_dict)
 
-        result = user_schema.dump(transaction_dicts)
+        result =transaction_schema.dump(transaction_dicts)
         return jsonify({"data": result})
-
+       
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"})
-
-
-
-@app.route("/transactions/detail/<id>", methods=["GET"])
-def detail_transaction(id):
-    try:
-        cur = mysql.connection.cursor()
-        cur.execute("SELECT * FROM transactions WHERE Id = %s", (id,))
-        transaction = cur.fetchone()
-        cur.close()
-
-        if transaction:
-            transaction_dict = dict(zip(user_schema.fields.keys(), transaction))
-            return jsonify({"data": transaction_dict})
-        else:
-            return jsonify({"message": "Book not found"})
-
-    except Exception as e:
-        return jsonify({"error": f"An error occurred: {str(e)}"})
-
-
+    
 
 @app.route("/transactions/update/<id>", methods=["PUT"])
 def update_transaction(id):
@@ -355,27 +392,45 @@ def add_transaction():
     try:
         transactions_data = request.get_json()
 
-        required_fields = ["Id", "Book_Id", "Member_Id", "Amount_paid", "Return_date", "Issue_date"]
+        required_fields = ["Id", "Book_Id", "Member_Id", "Amount_paid", "Quantity", "Return_date", "Issue_date"]
         for field in required_fields:
             if field not in transactions_data:
                 return jsonify({"error": f"Field '{field}' is missing from the request data"})
 
-        
         Id = transactions_data["Id"]
-        Book_Id= transactions_data["Book_Id"]
+        Book_Id = transactions_data["Book_Id"]
         Member_Id = transactions_data["Member_Id"]
-        Amount_paid=transactions_data["Amount_paid"]
-        Return_date=transactions_data["Return_date"]
-        Issue_date=transactions_data["Issue_date"]
+        Amount_paid = transactions_data["Amount_paid"]
+        Quantity = transactions_data["Quantity"]
+
+        # Convert Return_date and Issue_date to datetime objects if they are strings
+        Return_date = transactions_data["Return_date"]
+        Issue_date = transactions_data["Issue_date"]
+
+        if isinstance(Return_date, str):
+            # Adjust the format string based on the actual format of your date string
+            Return_date = datetime.strptime(Return_date, "%Y/%m/%d")
+
+        if isinstance(Issue_date, str):
+            # Adjust the format string based on the actual format of your date string
+            Issue_date = datetime.strptime(Issue_date, "%Y/%m/%d")
+
+        # Convert datetime objects to strings
+        Return_date_str = Return_date.strftime("%Y-%m-%d %H:%M:%S")
+        Issue_date_str = Issue_date.strftime("%Y-%m-%d %H:%M:%S")
+
+        print("Inserting data:", Id, Book_Id, Member_Id, Amount_paid, Quantity, Return_date_str, Issue_date_str)
 
         cur = mysql.connection.cursor()
-        cur.execute("INSERT INTO transactions(Id, Book_Id, Member_Id,Amount_paid,Return_date,Issue_date) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (Id, Book_Id,Member_Id,Amount_paid,Return_date, Issue_date))
+        cur.execute("INSERT INTO transactions(Id, Book_Id, Member_Id, Amount_paid, Quantity, Return_date, Issue_date) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (Id, Book_Id, Member_Id, Amount_paid, Quantity, Return_date_str, Issue_date_str))
 
         mysql.connection.commit()
         cur.execute("SELECT * FROM transactions WHERE Id = %s", (Id,))
         inserted_data = cur.fetchone()
         cur.close()
+
+        print("Inserted data:", inserted_data)
 
         if inserted_data:
             return jsonify({"data": inserted_data})
@@ -384,17 +439,5 @@ def add_transaction():
 
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"})
-    
-
-
-
 if __name__ == '__main__':
     app.run(debug=True, port=9090)
-
-
-
-
-
-
-
-
